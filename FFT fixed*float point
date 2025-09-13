@@ -32,6 +32,9 @@ class FixedPoint:
         else:
             result = (self.fixed_val * int(other * (1 << 16))) >> 16
             return FixedPoint(result, True)
+    
+    def __neg__(self):
+        return FixedPoint(-self.fixed_val, True)
 
 class ComplexNum:
     """复数类，支持浮点和定点运算"""
@@ -78,13 +81,14 @@ class FFT240:
     def __init__(self, use_fixed_point=False):
         self.use_fixed = use_fixed_point
         self.twiddle_factors = self._precompute_twiddles()
-    
+        
     def _precompute_twiddles(self):
         """预计算旋转因子"""
         twiddles = {}
         
-        # 为不同基数预计算旋转因子
-        for N in [2, 3, 5, 240]:
+        # 为不同大小预计算旋转因子
+        sizes = [2, 3, 5, 15, 16, 240]
+        for N in sizes:
             twiddles[N] = []
             for k in range(N):
                 angle = -2.0 * math.pi * k / N
@@ -96,9 +100,6 @@ class FFT240:
     
     def _radix2_butterfly(self, x0, x1, twiddle):
         """基-2蝶形运算"""
-        # 蝶形运算: 
-        # y0 = x0 + x1 * W
-        # y1 = x0 - x1 * W
         temp = x1 * twiddle
         y0 = x0 + temp
         y1 = x0 - temp
@@ -106,32 +107,45 @@ class FFT240:
     
     def _radix3_butterfly(self, x0, x1, x2, w1, w2):
         """基-3蝶形运算"""
-        # 基-3 DFT矩阵运算
         t1 = x1 * w1
         t2 = x2 * w2
         
+        # 第一个输出
         y0 = x0 + t1 + t2
         
-        # sqrt(3)/2 ≈ 0.866025
-        sqrt3_2 = 0.866025403784
-        if self.use_fixed:
-            sqrt3_2 = FixedPoint(sqrt3_2)
-        
-        # -0.5的系数
-        neg_half = -0.5
-        if self.use_fixed:
-            neg_half = FixedPoint(neg_half)
-        
-        real_part = x0.real + (t1.real + t2.real) * neg_half
-        imag_part_1 = x0.imag + (t1.imag + t2.imag) * neg_half + (t1.real - t2.real) * sqrt3_2
-        imag_part_2 = x0.imag + (t1.imag + t2.imag) * neg_half - (t1.real - t2.real) * sqrt3_2
+        # 基-3的系数
+        c1 = -0.5  # cos(2π/3)
+        s1 = 0.866025403784  # sin(2π/3)
         
         if self.use_fixed:
-            y1 = ComplexNum(real_part, imag_part_1, True)
-            y2 = ComplexNum(real_part, imag_part_2, True)
+            c1_fixed = FixedPoint(c1)
+            s1_fixed = FixedPoint(s1)
+            
+            # y1 = x0 + c1*(t1 + t2) + j*s1*(t1 - t2)
+            temp_sum = t1 + t2
+            temp_diff = t1 - t2
+            
+            real_y1 = x0.real + temp_sum.real * c1_fixed - temp_diff.imag * s1_fixed
+            imag_y1 = x0.imag + temp_sum.imag * c1_fixed + temp_diff.real * s1_fixed
+            
+            # y2 = x0 + c1*(t1 + t2) - j*s1*(t1 - t2)  
+            real_y2 = x0.real + temp_sum.real * c1_fixed + temp_diff.imag * s1_fixed
+            imag_y2 = x0.imag + temp_sum.imag * c1_fixed - temp_diff.real * s1_fixed
+            
+            y1 = ComplexNum(real_y1, imag_y1, True)
+            y2 = ComplexNum(real_y2, imag_y2, True)
         else:
-            y1 = ComplexNum(real_part, imag_part_1, False)
-            y2 = ComplexNum(real_part, imag_part_2, False)
+            temp_sum = t1 + t2
+            temp_diff = t1 - t2
+            
+            real_y1 = x0.real + temp_sum.real * c1 - temp_diff.imag * s1
+            imag_y1 = x0.imag + temp_sum.imag * c1 + temp_diff.real * s1
+            
+            real_y2 = x0.real + temp_sum.real * c1 + temp_diff.imag * s1
+            imag_y2 = x0.imag + temp_sum.imag * c1 - temp_diff.real * s1
+            
+            y1 = ComplexNum(real_y1, imag_y1, False)
+            y2 = ComplexNum(real_y2, imag_y2, False)
             
         return y0, y1, y2
     
@@ -140,133 +154,265 @@ class FFT240:
         x0, x1, x2, x3, x4 = inputs
         w1, w2, w3, w4 = twiddles
         
-        # 计算旋转后的值
+        # 旋转输入
         t1 = x1 * w1
-        t2 = x2 * w2  
+        t2 = x2 * w2
         t3 = x3 * w3
         t4 = x4 * w4
         
-        # 基-5 DFT的系数
-        c1 = 0.309016994374947  # cos(2π/5)
+        # 基-5 DFT系数
+        c1 = 0.309016994374947   # cos(2π/5)
         c2 = -0.809016994374947  # cos(4π/5)
-        s1 = 0.951056516295154  # sin(2π/5)
-        s2 = 0.587785252292473  # sin(4π/5)
+        s1 = 0.951056516295154   # sin(2π/5)
+        s2 = 0.587785252292473   # sin(4π/5)
         
         if self.use_fixed:
-            c1, c2, s1, s2 = FixedPoint(c1), FixedPoint(c2), FixedPoint(s1), FixedPoint(s2)
+            c1, c2 = FixedPoint(c1), FixedPoint(c2)
+            s1, s2 = FixedPoint(s1), FixedPoint(s2)
         
         # 输出计算
         y0 = x0 + t1 + t2 + t3 + t4
         
-        # 复杂的基-5运算，这里简化实现
-        a1 = t1.real + t4.real
-        a2 = t2.real + t3.real
-        b1 = t1.imag + t4.imag  
-        b2 = t2.imag + t3.imag
-        
-        real_1 = x0.real + a1 * c1 + a2 * c2
-        imag_1 = x0.imag + b1 * c1 + b2 * c2 + (t1.real - t4.real) * s1 + (t2.real - t3.real) * s2
+        # 中间变量
+        a1 = t1 + t4
+        a2 = t2 + t3
+        b1 = t1 - t4
+        b2 = t2 - t3
         
         if self.use_fixed:
-            y1 = ComplexNum(real_1, imag_1, True)
-            # 为简化，其他输出使用相似计算
-            y2 = y1  # 简化处理
-            y3 = y1
-            y4 = y1
+            real_base = x0.real + a1.real * c1 + a2.real * c2
+            imag_base = x0.imag + a1.imag * c1 + a2.imag * c2
+            
+            # y1
+            real_y1 = real_base - b1.imag * s1 - b2.imag * s2
+            imag_y1 = imag_base + b1.real * s1 + b2.real * s2
+            y1 = ComplexNum(real_y1, imag_y1, True)
+            
+            # y2  
+            real_y2 = x0.real + a1.real * c2 + a2.real * c1
+            imag_y2 = x0.imag + a1.imag * c2 + a2.imag * c1
+            real_y2 = real_y2 - b1.imag * s2 + b2.imag * s1
+            imag_y2 = imag_y2 + b1.real * s2 - b2.real * s1
+            y2 = ComplexNum(real_y2, imag_y2, True)
+            
+            # y3 (y2的共轭对称)
+            real_y3 = x0.real + a1.real * c2 + a2.real * c1
+            imag_y3 = x0.imag + a1.imag * c2 + a2.imag * c1
+            real_y3 = real_y3 + b1.imag * s2 - b2.imag * s1
+            imag_y3 = imag_y3 - b1.real * s2 + b2.real * s1
+            y3 = ComplexNum(real_y3, imag_y3, True)
+            
+            # y4 (y1的共轭对称)
+            real_y4 = x0.real + a1.real * c1 + a2.real * c2
+            imag_y4 = x0.imag + a1.imag * c1 + a2.imag * c2
+            real_y4 = real_y4 + b1.imag * s1 + b2.imag * s2
+            imag_y4 = imag_y4 - b1.real * s1 - b2.real * s2
+            y4 = ComplexNum(real_y4, imag_y4, True)
+            
         else:
-            y1 = ComplexNum(real_1, imag_1, False)
-            y2 = y1  # 简化处理  
-            y3 = y1
-            y4 = y1
+            real_base = x0.real + a1.real * c1 + a2.real * c2
+            imag_base = x0.imag + a1.imag * c1 + a2.imag * c2
+            
+            real_y1 = real_base - b1.imag * s1 - b2.imag * s2
+            imag_y1 = imag_base + b1.real * s1 + b2.real * s2
+            y1 = ComplexNum(real_y1, imag_y1, False)
+            
+            real_y2 = x0.real + a1.real * c2 + a2.real * c1
+            imag_y2 = x0.imag + a1.imag * c2 + a2.imag * c1
+            real_y2 = real_y2 - b1.imag * s2 + b2.imag * s1
+            imag_y2 = imag_y2 + b1.real * s2 - b2.real * s1
+            y2 = ComplexNum(real_y2, imag_y2, False)
+            
+            real_y3 = x0.real + a1.real * c2 + a2.real * c1
+            imag_y3 = x0.imag + a1.imag * c2 + a2.imag * c1
+            real_y3 = real_y3 + b1.imag * s2 - b2.imag * s1
+            imag_y3 = imag_y3 - b1.real * s2 + b2.real * s1
+            y3 = ComplexNum(real_y3, imag_y3, False)
+            
+            real_y4 = x0.real + a1.real * c1 + a2.real * c2
+            imag_y4 = x0.imag + a1.imag * c1 + a2.imag * c2
+            real_y4 = real_y4 + b1.imag * s1 + b2.imag * s2
+            imag_y4 = imag_y4 - b1.real * s1 - b2.real * s2
+            y4 = ComplexNum(real_y4, imag_y4, False)
             
         return y0, y1, y2, y3, y4
     
-    def _bit_reverse_240(self, data):
-        """240点的位反转，使用混合基方法"""
-        # 240 = 16 * 15 = 16 * 3 * 5
-        # 这里使用简化的重排序
+    def _mixed_radix_reorder(self, data):
+        """混合基重排序：240 = 16 × 15"""
         n = len(data)
         result = [None] * n
         
-        for i in range(n):
-            # 简化的重排序逻辑
-            j = i
-            # 可以实现更复杂的混合基位反转，这里使用基本重排
-            result[i] = data[j]
-            
+        # 240 = 16 × 15 的重排序
+        for i in range(16):
+            for j in range(15):
+                old_idx = i * 15 + j
+                new_idx = j * 16 + i
+                if old_idx < n and new_idx < n:
+                    result[new_idx] = data[old_idx]
+                    
         return result
     
-    def fft_240_float(self, data):
-        """240点浮点FFT"""
+    def _radix16_stage(self, x):
+        """基-16阶段（4个基-2阶段）"""
+        n = len(x)
+        
+        # 第1个基-2阶段
+        for i in range(0, n, 2):
+            if i + 1 < n:
+                twiddle = self.twiddle_factors[2][0]  # W_2^0 = 1
+                x[i], x[i + 1] = self._radix2_butterfly(x[i], x[i + 1], twiddle)
+        
+        # 第2个基-2阶段  
+        for i in range(0, n, 4):
+            for j in range(2):
+                if i + j + 2 < n:
+                    twiddle_idx = j
+                    twiddle = self.twiddle_factors[240][twiddle_idx * 240 // 4]
+                    x[i + j], x[i + j + 2] = self._radix2_butterfly(x[i + j], x[i + j + 2], twiddle)
+        
+        # 第3个基-2阶段
+        for i in range(0, n, 8):
+            for j in range(4):
+                if i + j + 4 < n:
+                    twiddle_idx = j
+                    twiddle = self.twiddle_factors[240][twiddle_idx * 240 // 8]
+                    x[i + j], x[i + j + 4] = self._radix2_butterfly(x[i + j], x[i + j + 4], twiddle)
+        
+        # 第4个基-2阶段
+        for i in range(0, n, 16):
+            for j in range(8):
+                if i + j + 8 < n:
+                    twiddle_idx = j
+                    twiddle = self.twiddle_factors[240][twiddle_idx * 240 // 16]
+                    x[i + j], x[i + j + 8] = self._radix2_butterfly(x[i + j], x[i + j + 8], twiddle)
+        
+        return x
+    
+    def _radix15_stage(self, x):
+        """基-15阶段（基-3 × 基-5）"""
+        n = len(x)
+        
+        # 先做基-3变换，每组5个元素
+        for group in range(0, n, 15):
+            for subgroup in range(5):
+                indices = [group + subgroup, group + subgroup + 5, group + subgroup + 10]
+                if all(idx < n for idx in indices):
+                    # 基-3蝶形运算
+                    w1 = self.twiddle_factors[15][subgroup]
+                    w2 = self.twiddle_factors[15][(2 * subgroup) % 15]
+                    
+                    x[indices[0]], x[indices[1]], x[indices[2]] = self._radix3_butterfly(
+                        x[indices[0]], x[indices[1]], x[indices[2]], w1, w2)
+        
+        # 再做基-5变换，每组3个元素  
+        for group in range(0, n, 15):
+            for subgroup in range(3):
+                indices = []
+                for k in range(5):
+                    idx = group + subgroup * 5 + k
+                    if idx < n:
+                        indices.append(idx)
+                
+                if len(indices) == 5:
+                    # 基-5蝶形运算
+                    twiddles = []
+                    for k in range(1, 5):
+                        twiddle_idx = (k * subgroup) % 15
+                        twiddles.append(self.twiddle_factors[15][twiddle_idx])
+                    
+                    inputs = [x[idx] for idx in indices]
+                    outputs = self._radix5_butterfly(inputs, twiddles)
+                    
+                    for k, idx in enumerate(indices):
+                        x[idx] = outputs[k]
+        
+        return x
+    
+    def _apply_twiddle_factors(self, x):
+        """应用中间旋转因子"""
+        n = len(x)
+        
+        # 在16点和15点变换之间应用旋转因子
+        for i in range(n):
+            # 计算二维索引
+            i1 = i // 15  # 0 to 15
+            i2 = i % 15   # 0 to 14
+            
+            # 计算旋转因子索引
+            twiddle_idx = (i1 * i2) % 240
+            twiddle = self.twiddle_factors[240][twiddle_idx]
+            
+            x[i] = x[i] * twiddle
+            
+        return x
+    
+    def compute_fft(self, data):
+        """主FFT计算函数 - 240 = 16 × 15"""
         if len(data) != 240:
             raise ValueError("输入数据长度必须为240")
         
         # 转换输入为复数
-        x = [ComplexNum(val.real if hasattr(val, 'real') else val, 
-                       val.imag if hasattr(val, 'imag') else 0, False) for val in data]
-        
-        # 240 = 16 * 15，先做16点，再做15点
-        # 第一阶段：16点FFT (2^4)
-        for stage in range(4):  # log2(16) = 4
-            step = 1 << (stage + 1)
-            half_step = 1 << stage
-            
-            for i in range(0, 240, step):
-                for j in range(half_step):
-                    if i + j + half_step < 240:
-                        twiddle_idx = (j * 240) // step
-                        if twiddle_idx < len(self.twiddle_factors[240]):
-                            twiddle = self.twiddle_factors[240][twiddle_idx]
-                            x[i + j], x[i + j + half_step] = self._radix2_butterfly(
-                                x[i + j], x[i + j + half_step], twiddle)
-        
-        # 第二阶段：处理剩余的15点 (3 * 5)
-        # 这里简化处理，实际应该做更复杂的混合基运算
-        
-        return x
-    
-    def fft_240_fixed(self, data):
-        """240点定点FFT"""
-        if len(data) != 240:
-            raise ValueError("输入数据长度必须为240")
-        
-        # 转换输入为定点复数
         x = [ComplexNum(val.real if hasattr(val, 'real') else val,
-                       val.imag if hasattr(val, 'imag') else 0, True) for val in data]
+                       val.imag if hasattr(val, 'imag') else 0, self.use_fixed) for val in data]
         
-        # 使用与浮点相同的算法结构，但使用定点运算
-        for stage in range(4):
-            step = 1 << (stage + 1)  
-            half_step = 1 << stage
-            
-            for i in range(0, 240, step):
-                for j in range(half_step):
-                    if i + j + half_step < 240:
-                        twiddle_idx = (j * 240) // step
-                        if twiddle_idx < len(self.twiddle_factors[240]):
-                            twiddle = self.twiddle_factors[240][twiddle_idx]
-                            x[i + j], x[i + j + half_step] = self._radix2_butterfly(
-                                x[i + j], x[i + j + half_step], twiddle)
+        # 第一步：混合基重排序
+        x = self._mixed_radix_reorder(x)
+        
+        # 第二步：16点FFT（4个基-2阶段）
+        x = self._radix16_stage(x)
+        
+        # 第三步：应用中间旋转因子
+        x = self._apply_twiddle_factors(x)
+        
+        # 第四步：15点FFT（基-3 × 基-5）
+        x = self._radix15_stage(x)
         
         return x
+
+# 验证函数：简单DFT作为参考
+def simple_dft(data):
+    """简单DFT实现用于验证"""
+    N = len(data)
+    result = []
     
-    def compute_fft(self, data):
-        """主FFT计算函数"""
-        if self.use_fixed:
-            return self.fft_240_fixed(data)
-        else:
-            return self.fft_240_float(data)
+    for k in range(N):
+        sum_real = 0.0
+        sum_imag = 0.0
+        
+        for n in range(N):
+            angle = -2.0 * math.pi * k * n / N
+            cos_val = math.cos(angle)
+            sin_val = math.sin(angle)
+            
+            if hasattr(data[n], 'real'):
+                real_part = data[n].real
+                imag_part = data[n].imag
+            else:
+                real_part = data[n]
+                imag_part = 0.0
+            
+            # 复数乘法
+            sum_real = sum_real + real_part * cos_val - imag_part * sin_val
+            sum_imag = sum_imag + real_part * sin_val + imag_part * cos_val
+        
+        result.append(ComplexNum(sum_real, sum_imag, False))
+    
+    return result
 
 # 测试程序
 def test_fft():
-    print("测试240点FFT实现")
+    print("测试240点完整混合基FFT实现")
     
-    # 生成测试数据
+    # 生成测试数据：包含多个频率分量
     test_data = []
     for i in range(240):
-        # 简单的测试信号：直流 + 正弦波
-        val = 1.0 + 0.5 * math.cos(2 * math.pi * i / 240)
+        # 复合信号：直流 + 基频 + 谐波
+        val = 1.0 + 0.5 * math.cos(2 * math.pi * i / 240) + 0.3 * math.cos(2 * math.pi * 3 * i / 240)
         test_data.append(val)
+    
+    # 使用简单DFT作为参考
+    print("\n计算参考DFT...")
+    reference_result = simple_dft(test_data[:10])  # 只计算前10点作为参考
     
     # 浮点FFT测试
     print("\n=== 浮点FFT测试 ===")
@@ -276,9 +422,10 @@ def test_fft():
     print("前10个浮点FFT结果:")
     for i in range(10):
         real, imag = result_float[i].to_float_tuple()
-        print(f"X[{i}] = {real:.6f} + {imag:.6f}j")
+        magnitude = (real**2 + imag**2)**0.5
+        print(f"X[{i}] = {real:.6f} + {imag:.6f}j, |X[{i}]| = {magnitude:.6f}")
     
-    # 定点FFT测试  
+    # 定点FFT测试
     print("\n=== 定点FFT测试 ===")
     fft_fixed = FFT240(use_fixed_point=True)
     result_fixed = fft_fixed.compute_fft(test_data)
@@ -286,23 +433,56 @@ def test_fft():
     print("前10个定点FFT结果:")
     for i in range(10):
         real, imag = result_fixed[i].to_float_tuple()
-        print(f"X[{i}] = {real:.6f} + {imag:.6f}j")
+        magnitude = (real**2 + imag**2)**0.5
+        print(f"X[{i}] = {real:.6f} + {imag:.6f}j, |X[{i}]| = {magnitude:.6f}")
     
-    # 比较浮点和定点结果的差异
-    print("\n=== 浮点与定点误差分析 ===")
-    max_error = 0
-    for i in range(min(10, len(result_float))):
+    # 与参考DFT对比（前10点）
+    print("\n=== 与参考DFT对比 ===")
+    print("参考DFT结果:")
+    for i in range(10):
+        real, imag = reference_result[i].to_float_tuple()
+        magnitude = (real**2 + imag**2)**0.5
+        print(f"DFT[{i}] = {real:.6f} + {imag:.6f}j, |DFT[{i}]| = {magnitude:.6f}")
+    
+    # 误差分析
+    print("\n=== 误差分析 ===")
+    float_errors = []
+    fixed_errors = []
+    
+    for i in range(10):
+        ref_real, ref_imag = reference_result[i].to_float_tuple()
         float_real, float_imag = result_float[i].to_float_tuple()
         fixed_real, fixed_imag = result_fixed[i].to_float_tuple()
         
-        error_real = abs(float_real - fixed_real)
-        error_imag = abs(float_imag - fixed_imag)
-        total_error = (error_real**2 + error_imag**2)**0.5
+        float_error = ((float_real - ref_real)**2 + (float_imag - ref_imag)**2)**0.5
+        fixed_error = ((fixed_real - ref_real)**2 + (fixed_imag - ref_imag)**2)**0.5
         
-        max_error = max(max_error, total_error)
-        print(f"误差[{i}]: {total_error:.8f}")
+        float_errors.append(float_error)
+        fixed_errors.append(fixed_error)
+        
+        print(f"误差[{i}]: 浮点={float_error:.8f}, 定点={fixed_error:.8f}")
     
-    print(f"最大误差: {max_error:.8f}")
+    print(f"\n最大误差: 浮点={max(float_errors):.8f}, 定点={max(fixed_errors):.8f}")
+    print(f"平均误差: 浮点={sum(float_errors)/len(float_errors):.8f}, 定点={sum(fixed_errors)/len(fixed_errors):.8f}")
+    
+    # 频谱分析
+    print("\n=== 频谱峰值检测 ===")
+    magnitudes = []
+    for i in range(240):
+        real, imag = result_float[i].to_float_tuple()
+        mag = (real**2 + imag**2)**0.5
+        magnitudes.append(mag)
+    
+    # 找出最大的几个峰值
+    peaks = []
+    for i in range(240):
+        if magnitudes[i] > 10.0:  # 阈值
+            peaks.append((i, magnitudes[i]))
+    
+    peaks.sort(key=lambda x: x[1], reverse=True)
+    print("检测到的频谱峰值:")
+    for freq, mag in peaks[:5]:
+        print(f"频率bin {freq}: 幅度 = {mag:.2f}")
 
 if __name__ == "__main__":
     test_fft()
